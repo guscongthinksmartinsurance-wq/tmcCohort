@@ -5,7 +5,7 @@ import re
 from datetime import datetime
 from io import BytesIO
 
-# --- 1. GIAO DIỆN ---
+# --- 1. STYLE & GIAO DIỆN ---
 st.set_page_config(page_title="TMC Strategic Portal", layout="wide")
 st.markdown("""
     <style>
@@ -49,51 +49,53 @@ def process_data(file):
     # Làm sạch Doanh thu
     df['REV'] = df[m_c].apply(lambda v: float(re.sub(r'[^0-9.]', '', str(v))) if pd.notna(v) and re.sub(r'[^0-9.]', '', str(v)) != '' else 0.0)
 
-    # Logic Phân loại Nhóm (Linh hoạt theo năm)
+    # Logic Phân loại Nhóm (Năm nay chi tiết - Năm cũ gom cụm)
     def assign_cohort(row):
         try:
-            # Nhận diện Cold Call trước
+            # 1. Nhận diện Cold Call
             if src_c and str(row[src_c]).strip().upper() in ['CC', 'COLDCALL']:
                 return "📞 Kênh Cold Call"
             
-            # Xử lý năm và tháng
+            # 2. Xử lý năm và tháng
             y = int(float(str(row[w_c]).strip()))
             m = int(float(str(row[v_c]).strip()))
-            return f"Lead T{m:02d}/{y}"
+            
+            if y == curr_y:
+                return f"Lead T{m:02d}/{y}"
+            else:
+                return f"Năm {y}" # Gom toàn bộ tháng của năm cũ vào 1 dòng Năm
         except:
             return "📦 Dữ liệu chưa phân loại"
 
     df['NHÓM_LEAD'] = df.apply(assign_cohort, axis=1)
-    df['TH_CHOT_NUM'] = df[e_c].apply(lambda v: int(float(v)) if pd.notna(v) and 1 <= int(float(v)) <= 12 else None)
+    df['TH_CHOT_NUM'] = df[e_c].apply(lambda v: int(float(v)) if (pd.notna(v) and str(v).replace('.','').isdigit()) else None)
 
     # Ma trận Doanh số & Số lượng
     matrix_rev = df.pivot_table(index='NHÓM_LEAD', columns='TH_CHOT_NUM', values='REV', aggfunc='sum').fillna(0)
     matrix_count = df.pivot_table(index='NHÓM_LEAD', columns='TH_CHOT_NUM', values=id_c, aggfunc='nunique').fillna(0)
 
-    # Sắp xếp Matrix theo thứ tự thời gian giảm dần (Mới nhất lên đầu)
+    # Sắp xếp Matrix
     def sort_mtx(mtx):
         mtx = mtx.reindex(columns=range(1, 13)).fillna(0)
         mtx.columns = [f"Tháng {int(c)}" for c in mtx.columns]
         
-        # Tách các nhóm để sort
-        idx_cc = [i for i in mtx.index if "Cold Call" in i]
-        idx_miss = [i for i in mtx.index if "chưa phân loại" in i]
-        idx_leads = [i for i in mtx.index if "Lead T" in i]
+        all_idx = list(mtx.index)
+        # Tách nhóm
+        idx_curr_year = sorted([i for i in all_idx if f"/{curr_y}" in i], reverse=True)
+        idx_old_years = sorted([i for i in all_idx if "Năm " in i], reverse=True)
+        idx_others = [i for i in all_idx if i not in idx_curr_year and i not in idx_old_years]
         
-        # Sort Lead theo năm giảm dần, tháng giảm dần
-        idx_leads.sort(key=lambda x: (int(x.split('/')[-1]), int(x.split('T')[-1].split('/')[0])), reverse=True)
-        
-        return mtx.reindex(idx_leads + idx_cc + idx_miss)
+        return mtx.reindex(idx_curr_year + idx_old_years + idx_others)
 
     matrix_rev = sort_mtx(matrix_rev)
     matrix_count = sort_mtx(matrix_count)
 
     # --- HIỂN THỊ ---
-    st.title(f"🚀 Strategic Growth Analysis - {curr_y}")
+    st.title(f"🚀 Strategic Portal - {curr_y}")
     
     col1, col2, col3 = st.columns(3)
     total_rev = df['REV'].sum()
-    marketing_rev = df[df['NHÓM_LEAD'].str.contains('Lead')]['REV'].sum()
+    marketing_rev = df[df['NHÓM_LEAD'].str.contains('Lead|Năm')]['REV'].sum()
     
     col1.metric("💰 TỔNG DOANH THU", f"${total_rev:,.0f}")
     col2.metric("🎯 DOANH THU MARKETING", f"${marketing_rev:,.0f}")
@@ -106,11 +108,11 @@ def process_data(file):
     # Xuất Excel
     output = BytesIO()
     with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
-        matrix_rev.to_excel(writer, sheet_name='Revenue_Cohort')
-        matrix_count.to_excel(writer, sheet_name='Count_Cohort')
-        df.to_excel(writer, index=False, sheet_name='Full_Data')
-    st.sidebar.download_button("📥 Tải Báo Cáo Strategic", output.getvalue(), f"TMC_Report_{curr_y}.xlsx")
+        matrix_rev.to_excel(writer, sheet_name='Summary_Revenue')
+        matrix_count.to_excel(writer, sheet_name='Summary_Count')
+        df.to_excel(writer, index=False, sheet_name='Clean_Data')
+    st.sidebar.download_button("📥 Tải Báo Cáo Strategic", output.getvalue(), f"Strategic_Report_{curr_y}.xlsx")
 
-st.title("🛡️ Strategic Portal")
+st.sidebar.title("🛠️ Điều khiển")
 f = st.file_uploader("Nạp dữ liệu Masterlife", type=['csv', 'xlsx'])
 if f: process_data(f)
